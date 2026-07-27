@@ -1,0 +1,25 @@
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+!.env.db.example
+*.pem
+*.key
+*.p12
+*.jks
+
+# Go build and test output
+.cache/
+bin/
+coverage.out
+*.exe
+*.test
+*.prof
+
+# Runtime and editor files
+*.log
+*.md
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
