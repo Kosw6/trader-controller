@@ -6,6 +6,8 @@ services:
     command:
       - postgres
       - -c
+      - config_file=/etc/postgresql/local-postgresql.conf
+      - -c
       - shared_preload_libraries=timescaledb,pg_stat_statements
       - -c
       - max_connections=100
@@ -26,12 +28,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       TZ: ${TZ:-Asia/Seoul}
+      PGDATA: /var/lib/postgresql/data/db_data
     ports:
       - "127.0.0.1:${CONTROLLER_DB_PORT:-55432}:5432"
     volumes:
-      - type: bind
-        source: ${LOCAL_PGDATA:?Set LOCAL_PGDATA to the PostgreSQL data directory, for example C:/Users/USER/Desktop/db_data}
-        target: /var/lib/postgresql/data
+      - local-db-data:/var/lib/postgresql/data
+      - ./db/local/postgresql.conf:/etc/postgresql/local-postgresql.conf:ro
+      - ./db/local/pg_hba.conf:/etc/postgresql/local-pg_hba.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -106,3 +109,6 @@ networks:
 
 volumes:
   kafka-data:
+  local-db-data:
+    external: true
+    name: ${LOCAL_DB_VOLUME:-trader-db-review-20261002}
