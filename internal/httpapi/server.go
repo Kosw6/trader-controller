@@ -19,6 +19,9 @@ import (
 )
 
 type Service interface {
+	ListAssetAliases(context.Context, domain.AssetLinkFilter) ([]domain.AssetAliases, error)
+	SaveAssetAlias(context.Context, int64, int64, domain.SaveAssetAlias) (domain.AssetAlias, error)
+	DeleteAssetAlias(context.Context, int64, int64) error
 	Ping(ctx context.Context) error
 	CreateAdminSession(ctx context.Context, actor string, ipAddress *string, userAgent *string, ttl time.Duration) (string, domain.AdminSession, error)
 	GetAdminSession(ctx context.Context, token string) (domain.AdminSession, error)
@@ -193,6 +196,10 @@ func New(service Service, auth AuthConfig, logger *slog.Logger) *Server {
 
 	mux.HandleFunc("GET /api/v1/admin/assets/company-links/summary", s.assetCompanyLinkSummary)
 	mux.HandleFunc("GET /api/v1/admin/assets", s.listAssets)
+	mux.HandleFunc("GET /api/v1/admin/asset-aliases", s.listAssetAliases)
+	mux.HandleFunc("POST /api/v1/admin/assets/{id}/aliases", s.saveAssetAlias)
+	mux.HandleFunc("PUT /api/v1/admin/assets/{id}/aliases/{aliasId}", s.saveAssetAlias)
+	mux.HandleFunc("DELETE /api/v1/admin/assets/{id}/aliases/{aliasId}", s.deleteAssetAlias)
 	mux.HandleFunc("GET /api/v1/admin/assets/company-matches", s.listAssetCompanyMatches)
 	mux.HandleFunc("GET /api/v1/admin/assets/unmatched", s.listUnmatchedAssets)
 	mux.HandleFunc("POST /api/v1/admin/assets/company-matches/{id}/confirm", s.confirmAssetCompanyMatch)
@@ -743,6 +750,8 @@ func (s *Server) respond(w http.ResponseWriter, value any, err error, successSta
 		return
 	}
 	switch {
+	case errors.Is(err, store.ErrValidation):
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, store.ErrConflict), errors.Is(err, store.ErrInvalidState):

@@ -9,12 +9,16 @@ import (
 )
 
 var (
+	ErrValidation   = errors.New("invalid request")
 	ErrNotFound     = errors.New("resource not found")
 	ErrConflict     = errors.New("resource already exists")
 	ErrInvalidState = errors.New("resource state does not allow this operation")
 )
 
 type Store interface {
+	ListAssetAliases(context.Context, domain.AssetLinkFilter) ([]domain.AssetAliases, error)
+	SaveAssetAlias(context.Context, int64, int64, string, string) (domain.AssetAlias, error)
+	DeleteAssetAlias(context.Context, int64, int64) error
 	Ping(ctx context.Context) error
 	CreateAdminSession(ctx context.Context, req domain.CreateAdminSessionRequest) (domain.AdminSession, error)
 	GetActiveAdminSession(ctx context.Context, tokenHash string, now time.Time) (domain.AdminSession, error)
