@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -21,7 +22,14 @@ const itemColumns = `
     id, job_id, item_key, status, attempt_count, checkpoint,
     error_code, error_message, started_at, completed_at`
 
-const jobsEventsTopic = "trader.jobs.events"
+// jobsEventsTopic must match the relay/consumer topic, including isolated queues.
+func jobsEventsTopic() string {
+	if topic := strings.TrimSpace(os.Getenv("KAFKA_TOPIC")); topic != "" {
+		return topic
+	}
+	return "trader.jobs.events"
+}
+
 const rawKISReadyTopic = "trader.raw.kis.ready"
 const rawBLSReadyTopic = "trader.raw.bls.ready"
 const rawSECReadyTopic = "trader.raw.sec.ready"
@@ -168,7 +176,7 @@ func (s *Store) ActivateDueJobs(ctx context.Context, now time.Time, limit int) (
         JOIN pipeline_job j ON j.id = i.job_id
         WHERE i.job_id = ANY($1)
           AND i.status = 'QUEUED'
-        ON CONFLICT (idempotency_key) DO NOTHING`, ids, jobsEventsTopic)
+        ON CONFLICT (idempotency_key) DO NOTHING`, ids, jobsEventsTopic())
 	if err != nil {
 		return 0, err
 	}
@@ -580,7 +588,7 @@ func insertJobItemQueuedOutbox(ctx context.Context, tx pgx.Tx, job domain.Job, i
         )`,
 		itemID,
 		jobItemQueuedEventType,
-		jobsEventsTopic,
+		jobsEventsTopic(),
 		fmt.Sprintf("job_item:%d", itemID),
 		idempotencyKey,
 		payload,

@@ -13,9 +13,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kosw006/trader-controller/internal/app"
 	"github.com/kosw006/trader-controller/internal/config"
+	"github.com/kosw006/trader-controller/internal/financialmapping"
 	"github.com/kosw006/trader-controller/internal/httpapi"
 	"github.com/kosw006/trader-controller/internal/outbox"
 	"github.com/kosw006/trader-controller/internal/postgres"
+	"github.com/kosw006/trader-controller/internal/recoverycoord"
 	"github.com/kosw006/trader-controller/internal/scheduler"
 	"github.com/kosw006/trader-controller/internal/worker"
 )
@@ -55,13 +57,30 @@ func main() {
 
 	repository := postgres.New(pool)
 	service := app.New(repository)
+	var apiOptions []httpapi.Option
+	var mappingService *financialmapping.Service
+	if cfg.FinancialMappingEnabled {
+		mappingService = financialmapping.New(pool)
+		apiOptions = append(apiOptions, httpapi.WithFinancialMapping(mappingService))
+	}
+	if cfg.RecoveryCoordinatorEnabled {
+		coordinator, recoveryErr := recoverycoord.NewWithRawTopic(pool, cfg.RecoveryRawTopic)
+		if recoveryErr != nil {
+			logger.Error("invalid recovery topic configuration")
+			os.Exit(1)
+		}
+		apiOptions = append(apiOptions, httpapi.WithRecoveryCoordinator(coordinator))
+		if os.Getenv("NEWS_RECOVERY_ENABLED") == "true" {
+			apiOptions = append(apiOptions, httpapi.WithNewsRecovery())
+		}
+	}
 	api := httpapi.New(service, httpapi.AuthConfig{
 		AdminAPIKey:       cfg.AdminAPIKey,
 		AdminUsername:     cfg.AdminUsername,
 		AdminPasswordHash: cfg.AdminPasswordHash,
 		SessionTTL:        cfg.AdminSessionTTL,
 		CookieSecure:      cfg.AdminCookieSecure,
-	}, logger)
+	}, logger, apiOptions...)
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           api.Handler(),
@@ -74,6 +93,9 @@ func main() {
 	if cfg.SchedulerEnabled {
 		runner := scheduler.New(service, cfg.SchedulerPollInterval, cfg.SchedulerBatchSize, logger)
 		go runner.Run(ctx)
+		if mappingService != nil {
+			go scheduler.New(mappingService, cfg.SchedulerPollInterval, cfg.SchedulerBatchSize, logger).Run(ctx)
+		}
 	}
 
 	if cfg.WorkerManagerEnabled {
@@ -85,7 +107,7 @@ func main() {
 		kafkaMonitorTargets := kafkaMonitorConfigs(outboxCfg, cfg, repository)
 		manager := worker.NewManager(
 			repository,
-			[]worker.Definition{
+			worker.ForHostingMode([]worker.Definition{
 				{
 					Name:         "outbox-relay",
 					DisplayName:  "Kafka Outbox Relay",
@@ -146,7 +168,7 @@ func main() {
 					Run:          worker.NewAWSASGActuatorTask(repository, cfg.WorkerPollInterval, logger),
 					RunOnce:      worker.NewAWSASGActuatorRunOnceTask(repository, logger),
 				},
-			},
+			}, cfg.SharedWorkerHost),
 			cfg.WorkerPollInterval,
 			cfg.WorkerLeaseTTL,
 			logger,

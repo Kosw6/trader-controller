@@ -453,6 +453,7 @@ type AssetOption struct {
 	ID                   int64  `json:"id"`
 	Ticker               string `json:"ticker"`
 	Name                 string `json:"name"`
+	CompanyName          string `json:"companyName,omitempty"`
 	AssetType            string `json:"assetType"`
 	Exchange             string `json:"exchange"`
 	Currency             string `json:"currency"`
@@ -612,6 +613,7 @@ type ListFilter struct {
 }
 
 type AssetLinkFilter struct {
+	AssetID   int64
 	Status    string
 	AssetType string
 	Exchange  string

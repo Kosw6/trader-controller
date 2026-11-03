@@ -13,6 +13,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/kosw006/trader-controller/internal/domain"
+	"github.com/kosw006/trader-controller/internal/newscollection"
 	"github.com/kosw006/trader-controller/internal/store"
 	"github.com/robfig/cron/v3"
 )
@@ -97,6 +98,9 @@ func (s *Service) GetSchedule(ctx context.Context, id int64) (domain.Schedule, e
 
 // CreateSchedule은 Cron·timezone·JSON을 검증하고 첫 실행시각을 계산해 저장한다.
 func (s *Service) CreateSchedule(ctx context.Context, req domain.CreateScheduleRequest) (domain.Schedule, error) {
+	if err := s.validateNewsScheduleTargets(ctx, req.JobType, req.Parameters); err != nil {
+		return domain.Schedule{}, err
+	}
 	if err := validateSchedule(req.JobType, req.CronExpression, req.Timezone, req.Parameters); err != nil {
 		return domain.Schedule{}, err
 	}
@@ -109,6 +113,9 @@ func (s *Service) CreateSchedule(ctx context.Context, req domain.CreateScheduleR
 
 // UpdateSchedule은 변경된 Cron을 검증하고 다음 실행시각도 함께 다시 계산한다.
 func (s *Service) UpdateSchedule(ctx context.Context, id int64, req domain.UpdateScheduleRequest) (domain.Schedule, error) {
+	if err := s.validateNewsScheduleTargets(ctx, req.JobType, req.Parameters); err != nil {
+		return domain.Schedule{}, err
+	}
 	if err := validateSchedule(req.JobType, req.CronExpression, req.Timezone, req.Parameters); err != nil {
 		return domain.Schedule{}, err
 	}
@@ -552,9 +559,36 @@ func (s *Service) RunDueSchedules(ctx context.Context, limit int) (int, error) {
 			continue
 		}
 		var params domain.ScheduleParameters
-		if err := json.Unmarshal(schedule.Parameters, &params); err != nil {
-			failures = append(failures, fmt.Errorf("schedule %d parameters: %w", schedule.ID, err))
-			continue
+		if newscollection.IsJob(schedule.JobType) {
+			var envelope struct {
+				News newscollection.Request `json:"news"`
+			}
+			if err := json.Unmarshal(schedule.Parameters, &envelope); err != nil || envelope.News.LookbackDays == 0 {
+				failures = append(failures, fmt.Errorf("schedule %d invalid news template", schedule.ID))
+				continue
+			}
+			resolved, resolveErr := s.ResolveNewsCollection(ctx, envelope.News)
+			if resolveErr != nil {
+				failures = append(failures, resolveErr)
+				continue
+			}
+			plan, err := newscollection.Build(resolved, *schedule.NextRunAt)
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			if plan.JobType != schedule.JobType {
+				failures = append(failures, errors.New("news schedule provider mismatch"))
+				continue
+			}
+			// TriggerSchedule persists these concrete dates in the job, leaving the schedule template intact.
+			schedule.Parameters = plan.Parameters
+			params.Source, params.ItemKeys = plan.Source, plan.ItemKeys
+		} else {
+			if err := json.Unmarshal(schedule.Parameters, &params); err != nil {
+				failures = append(failures, fmt.Errorf("schedule %d parameters: %w", schedule.ID, err))
+				continue
+			}
 		}
 		if params.Source == "" || len(params.ItemKeys) == 0 {
 			failures = append(failures, fmt.Errorf("schedule %d requires parameters.source and parameters.itemKeys", schedule.ID))
@@ -583,6 +617,32 @@ func (s *Service) RunDueSchedules(ctx context.Context, limit int) (int, error) {
 
 // validateSchedule은 Schedule 생성 전에 필수값과 Cron·timezone·JSON 형식을 확인한다.
 func validateSchedule(jobType, expression, timezone string, parameters json.RawMessage) error {
+	if newscollection.IsJob(jobType) {
+		var envelope struct {
+			News newscollection.Request `json:"news"`
+		}
+		if json.Unmarshal(parameters, &envelope) != nil || envelope.News.LookbackDays == 0 {
+			return fmt.Errorf("%w: news schedules require a rolling news template", store.ErrValidation)
+		}
+		validationReq := envelope.News
+		if len(validationReq.AssetIDs) > 0 {
+			if err := newscollection.ValidateSelection(validationReq); err != nil {
+				return fmt.Errorf("%w: %s", store.ErrValidation, err)
+			}
+			// Catalog resolution is checked with a DB context by Create/UpdateSchedule.
+			validationReq.AssetIDs = nil
+			if validationReq.Provider == "RSS" {
+				validationReq.Queries = []string{"catalog selection"}
+			}
+		}
+		plan, err := newscollection.Build(validationReq, time.Now().UTC())
+		if err != nil {
+			return fmt.Errorf("%w: %s", store.ErrValidation, err)
+		}
+		if plan.JobType != jobType {
+			return fmt.Errorf("%w: news schedule provider mismatch", store.ErrValidation)
+		}
+	}
 	if strings.TrimSpace(jobType) == "" {
 		return errors.New("jobType is required")
 	}
@@ -595,6 +655,11 @@ func validateSchedule(jobType, expression, timezone string, parameters json.RawM
 
 // validateJobRequest는 Job 필수값, Item 중복, parameters JSON 형식을 확인한다.
 func validateJobRequest(jobType, source string, itemKeys []string, parameters json.RawMessage) error {
+	if newscollection.IsJob(jobType) {
+		if err := newscollection.Validate(jobType, source, itemKeys, parameters); err != nil {
+			return fmt.Errorf("%w: %s", store.ErrValidation, err)
+		}
+	}
 	if strings.TrimSpace(jobType) == "" || strings.TrimSpace(source) == "" {
 		return errors.New("jobType and source are required")
 	}

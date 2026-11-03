@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/kosw006/trader-controller/internal/domain"
+	"github.com/kosw006/trader-controller/internal/recovery"
+	"github.com/kosw006/trader-controller/internal/recoverycoord"
 	"github.com/kosw006/trader-controller/internal/store"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -35,6 +37,7 @@ type Service interface {
 	CreateJob(ctx context.Context, req domain.CreateJobRequest) (domain.JobDetail, error)
 	ListJobs(ctx context.Context, filter domain.ListFilter) ([]domain.Job, error)
 	GetJob(ctx context.Context, id int64) (domain.JobDetail, error)
+	RecoveryPreview(ctx context.Context, id int64) (recovery.Preview, error)
 	RetryJob(ctx context.Context, id int64, requestedBy string) (domain.JobDetail, error)
 	CancelJob(ctx context.Context, id int64) (domain.Job, error)
 	ListItems(ctx context.Context, jobID int64, filter domain.ListFilter) ([]domain.JobItem, error)
@@ -78,6 +81,9 @@ type Service interface {
 }
 
 type Server struct {
+	mapping           MappingService
+	coordinator       *recoverycoord.Coordinator
+	newsRecovery      bool
 	service           Service
 	adminAPIKey       string
 	adminUsername     string
@@ -120,8 +126,17 @@ func (w *loggingResponseWriter) Write(value []byte) (int, error) {
 	return written, err
 }
 
+// Option configures an explicitly enabled API capability.
+type Option func(*Server)
+
+func WithRecoveryCoordinator(c *recoverycoord.Coordinator) Option {
+	return func(s *Server) { s.coordinator = c }
+}
+
+func WithNewsRecovery() Option { return func(s *Server) { s.newsRecovery = true } }
+
 // New는 관리자 endpoint와 공통 middleware를 등록한 HTTP Server를 만든다.
-func New(service Service, auth AuthConfig, logger *slog.Logger) *Server {
+func New(service Service, auth AuthConfig, logger *slog.Logger, options ...Option) *Server {
 	if auth.AdminUsername == "" {
 		auth.AdminUsername = "admin"
 	}
@@ -142,7 +157,18 @@ func New(service Service, auth AuthConfig, logger *slog.Logger) *Server {
 		logger:            logger,
 	}
 	mux := http.NewServeMux()
+	for _, option := range options {
+		option(s)
+	}
+	if s.coordinator != nil {
+		s.recoveryRoutes(mux)
+	}
+	if s.mapping != nil {
+		s.mappingRoutes(mux)
+	}
 	mux.HandleFunc("GET /healthz", s.health)
+	s.newsRoutes(mux)
+	s.priceMoveRoutes(mux)
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("POST /api/v1/admin/auth/login", s.adminLogin)
 	mux.HandleFunc("GET /api/v1/admin/auth/me", s.adminMe)
@@ -158,6 +184,7 @@ func New(service Service, auth AuthConfig, logger *slog.Logger) *Server {
 	mux.HandleFunc("POST /api/v1/admin/pipeline/schedules/{id}/disable", s.disableSchedule)
 
 	mux.HandleFunc("GET /api/v1/admin/pipeline/jobs", s.listJobs)
+	mux.HandleFunc("GET /api/v1/admin/pipeline/jobs/{id}/recovery-preview", s.recoveryPreview)
 	mux.HandleFunc("POST /api/v1/admin/pipeline/jobs", s.createJob)
 	mux.HandleFunc("GET /api/v1/admin/pipeline/jobs/{id}", s.getJob)
 	mux.HandleFunc("POST /api/v1/admin/pipeline/jobs/{id}/retry", s.retryJob)
@@ -400,6 +427,16 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := s.service.GetJob(r.Context(), id)
+	s.respond(w, value, err, http.StatusOK)
+}
+
+// recoveryPreview returns advice without changing any Job or Item.
+func (s *Server) recoveryPreview(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	value, err := s.service.RecoveryPreview(r.Context(), id)
 	s.respond(w, value, err, http.StatusOK)
 }
 

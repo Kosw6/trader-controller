@@ -9,6 +9,10 @@ import (
 )
 
 type Config struct {
+	FinancialMappingEnabled    bool
+	RecoveryCoordinatorEnabled bool
+	RecoveryRawTopic           string
+
 	HTTPAddr              string
 	DatabaseURL           string
 	AdminAPIKey           string
@@ -20,6 +24,7 @@ type Config struct {
 	SchedulerPollInterval time.Duration
 	SchedulerBatchSize    int
 	WorkerManagerEnabled  bool
+	SharedWorkerHost      bool
 	WorkerPollInterval    time.Duration
 	WorkerLeaseTTL        time.Duration
 	WorkerJobBatchSize    int
@@ -33,6 +38,10 @@ type Config struct {
 // Load는 환경변수를 읽고 실행에 필요한 필수값과 범위를 검증한다.
 func Load() (Config, error) {
 	cfg := Config{
+		FinancialMappingEnabled:    boolEnv("FINANCIAL_MAPPING_ENABLED", false),
+		RecoveryCoordinatorEnabled: boolEnv("RECOVERY_COORDINATOR_ENABLED", false),
+		RecoveryRawTopic:           envOrDefault("RECOVERY_RAW_TOPIC", "trader.raw.coordinated.ready"),
+
 		HTTPAddr:              envOrDefault("HTTP_ADDR", ":8090"),
 		DatabaseURL:           os.Getenv("DATABASE_URL"),
 		AdminAPIKey:           os.Getenv("ADMIN_API_KEY"),
@@ -44,6 +53,7 @@ func Load() (Config, error) {
 		SchedulerPollInterval: durationEnv("SCHEDULER_POLL_INTERVAL", 10*time.Second),
 		SchedulerBatchSize:    intEnv("SCHEDULER_BATCH_SIZE", 20),
 		WorkerManagerEnabled:  boolEnv("WORKER_MANAGER_ENABLED", true),
+		SharedWorkerHost:      boolEnv("WORKER_SHARED_HOST", false),
 		WorkerPollInterval:    durationEnv("WORKER_POLL_INTERVAL", 5*time.Second),
 		WorkerLeaseTTL:        durationEnv("WORKER_LEASE_TTL", 30*time.Second),
 		WorkerJobBatchSize:    intEnv("WORKER_JOB_BATCH_SIZE", 100),
@@ -55,6 +65,13 @@ func Load() (Config, error) {
 	}
 
 	var missing []string
+	if raw := os.Getenv("WORKER_SHARED_HOST"); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, errors.New("WORKER_SHARED_HOST must be a valid boolean")
+		}
+		cfg.SharedWorkerHost = value
+	}
 	if cfg.DatabaseURL == "" {
 		missing = append(missing, "DATABASE_URL")
 	}

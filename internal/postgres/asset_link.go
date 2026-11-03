@@ -66,8 +66,9 @@ func (s *Store) ListAssets(ctx context.Context, filter domain.AssetLinkFilter) (
             a.id, a.ticker, a.name, a.asset_type, a.exchange, a.currency,
             COALESCE(aps.provider, ''),
             COALESCE(aps.provider_exchange_code, ''),
-            COALESCE(aps.provider_symbol, '')
+            COALESCE(aps.provider_symbol, ''), COALESCE(c.company_name, '')
         FROM asset a
+        LEFT JOIN company c ON c.id = a.company_id
         LEFT JOIN LATERAL (
             SELECT provider, provider_exchange_code, provider_symbol
             FROM asset_provider_symbol
@@ -78,21 +79,25 @@ func (s *Store) ListAssets(ctx context.Context, filter domain.AssetLinkFilter) (
             LIMIT 1
         ) aps ON TRUE
         WHERE a.active = TRUE
+          AND ($6::bigint = 0 OR a.id = $6)
           AND ($1 = '' OR a.asset_type = $1)
           AND ($2 = '' OR a.exchange = $2)
           AND (
               $3 = ''
               OR a.ticker ILIKE '%' || $3 || '%'
               OR a.name ILIKE '%' || $3 || '%'
+              OR c.company_name ILIKE '%' || $3 || '%'
               OR aps.provider_symbol ILIKE '%' || $3 || '%'
           )
-        ORDER BY a.exchange, a.ticker, a.id
+        ORDER BY CASE WHEN upper(a.ticker) = upper($3) THEN 0 ELSE 1 END,
+                 a.exchange, a.ticker, a.id
         LIMIT $4 OFFSET $5`,
 		filter.AssetType,
 		filter.Exchange,
 		filter.Query,
 		filter.Limit,
 		filter.Offset,
+		filter.AssetID,
 	)
 	if err != nil {
 		return nil, err
@@ -112,6 +117,7 @@ func (s *Store) ListAssets(ctx context.Context, filter domain.AssetLinkFilter) (
 			&value.Provider,
 			&value.ProviderExchangeCode,
 			&value.ProviderSymbol,
+			&value.CompanyName,
 		); err != nil {
 			return nil, err
 		}
